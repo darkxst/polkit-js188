@@ -138,7 +138,7 @@ G_DEFINE_TYPE (PolkitBackendJsAuthority, polkit_backend_js_authority, POLKIT_BAC
 /* ---------------------------------------------------------------------------------------------------- */
 
 static JSBool          (*dJS_CallFunctionName)(JSContext *cx, JSObject *obj, const char *name, unsigned argc, jsval *argv, jsval *rval);
-static JSObject       *(*dJS_CompileFile)(JSContext *cx, JSObject *obj, const char *filename);
+static JSObject       *(*dJS_CompileUTF8File)(JSContext *cx, JSObject *obj, const char *filename);
 static JSBool          (*dJS_ConvertArguments)(JSContext *cx, unsigned argc, jsval *argv, const char *format, ...);
 static JSBool          (*dJS_ConvertStub)(JSContext *cx, JSObject *obj, JSType type, jsval *vp);
 static JSBool          (*dJS_DefineFunctions)(JSContext *cx, JSObject *obj, JSFunctionSpec *fs);
@@ -153,7 +153,6 @@ static JSBool          (*dJS_EvaluateScript)(JSContext *cx, JSObject *obj,
                                              const char *filename, unsigned lineno,
                                              jsval *rval);
 static JSBool          (*dJS_ExecuteScript)(JSContext *cx, JSObject *obj, JSObject *scriptObj, jsval *rval);
-static void            (*dJS_FinalizeStub)(JSContext *cx, JSObject *obj);
 static void            (*dJS_free)(JSContext *cx, void *p);
 static void            (*dJS_GC)(JSContext *cx);
 static JSBool          (*dJS_GetArrayLength)(JSContext *cx, JSObject *obj, guint32 *lengthp);
@@ -163,7 +162,7 @@ static const jschar   *(*dJS_GetStringCharsZ)(JSContext *cx, JSString *str);
 static JSBool          (*dJS_InitStandardClasses)(JSContext *cx, JSObject *obj);
 static void            (*dJS_MaybeGC)(JSContext *cx);
 static JSObject       *(*dJS_NewArrayObject)(JSContext *cx, gint32 length, jsval *vector);
-static JSObject       *(*dJS_NewCompartmentAndGlobalObject)(JSContext *cx, JSClass *clasp, JSPrincipals *principals);
+static JSObject       *(*dJS_NewGlobalObject)(JSContext *cx, JSClass *clasp, JSPrincipals *principals);
 static JSContext      *(*dJS_NewContext)(JSRuntime *rt, size_t stackChunkSize);
 #define dJS_NewRuntime dJS_Init
 static JSRuntime      *(*dJS_Init)(uint32_t maxbytes);
@@ -181,7 +180,7 @@ static JSBool          (*dJS_SetProperty)(JSContext *cx, JSObject *obj, const ch
 static JSVersion       (*dJS_SetVersion)(JSContext *cx, JSVersion version);
 static void            (*dJS_ShutDown)(void);
 static JSBool          (*dJS_StrictPropertyStub)(JSContext *cx, JSObject *obj, jsid id, JSBool strict, jsval *vp);
-static void            (*dJS_TriggerOperationCallback)(JSContext *cx);
+static void            (*dJS_TriggerOperationCallback)(JSRuntime *rt);
 
 #define DJS_SYMBOL(x) {#x, (void*) &d ## x}
 static const struct {
@@ -189,7 +188,7 @@ static const struct {
   gpointer *ptr;
 } djs_symbols[] = {
   DJS_SYMBOL(JS_CallFunctionName),
-  DJS_SYMBOL(JS_CompileFile),
+  DJS_SYMBOL(JS_CompileUTF8File),
   DJS_SYMBOL(JS_ConvertArguments),
   DJS_SYMBOL(JS_ConvertStub),
   DJS_SYMBOL(JS_DefineFunctions),
@@ -200,7 +199,6 @@ static const struct {
   DJS_SYMBOL(JS_EnumerateStub),
   DJS_SYMBOL(JS_EvaluateScript),
   DJS_SYMBOL(JS_ExecuteScript),
-  DJS_SYMBOL(JS_FinalizeStub),
   DJS_SYMBOL(JS_free),
   DJS_SYMBOL(JS_GC),
   DJS_SYMBOL(JS_GetArrayLength),
@@ -210,7 +208,7 @@ static const struct {
   DJS_SYMBOL(JS_InitStandardClasses),
   DJS_SYMBOL(JS_MaybeGC),
   DJS_SYMBOL(JS_NewArrayObject),
-  DJS_SYMBOL(JS_NewCompartmentAndGlobalObject),
+  DJS_SYMBOL(JS_NewGlobalObject),
   DJS_SYMBOL(JS_NewContext),
   DJS_SYMBOL(JS_Init), /* Macro: JS_NewRuntime */
   DJS_SYMBOL(JS_NewStringCopyZ),
@@ -387,7 +385,7 @@ load_scripts (PolkitBackendJsAuthority  *authority)
       const gchar *filename = l->data;
       JSObject *script;
 
-      script = dJS_CompileFile (authority->priv->cx,
+      script = dJS_CompileUTF8File (authority->priv->cx,
                                 authority->priv->js_global,
                                 filename);
       if (script == NULL)
@@ -561,7 +559,6 @@ polkit_backend_js_authority_constructed (GObject *object)
   js_global_class.enumerate   = dJS_EnumerateStub;
   js_global_class.resolve     = dJS_ResolveStub;
   js_global_class.convert     = dJS_ConvertStub;
-  js_global_class.finalize    = dJS_FinalizeStub;
 
   js_polkit_class.name        = "Polkit";
   js_polkit_class.flags       = 0;
@@ -572,9 +569,8 @@ polkit_backend_js_authority_constructed (GObject *object)
   js_polkit_class.enumerate   = dJS_EnumerateStub;
   js_polkit_class.resolve     = dJS_ResolveStub;
   js_polkit_class.convert     = dJS_ConvertStub;
-  js_polkit_class.finalize    = dJS_FinalizeStub;
 
-  authority->priv->js_global = dJS_NewCompartmentAndGlobalObject (authority->priv->cx,
+  authority->priv->js_global = dJS_NewGlobalObject (authority->priv->cx,
                                                                   &js_global_class,
                                                                   NULL);
   if (authority->priv->js_global == NULL)
@@ -1059,7 +1055,7 @@ rkt_on_timeout (gpointer user_data)
   PolkitBackendJsAuthority *authority = POLKIT_BACKEND_JS_AUTHORITY (user_data);
 
   /* Supposedly this is thread-safe... */
-  dJS_TriggerOperationCallback (authority->priv->cx);
+  dJS_TriggerOperationCallback (authority->priv->rt);
 
   /* keep source around so we keep trying to kill even if the JS bit catches the exception
    * thrown in js_operation_callback()
